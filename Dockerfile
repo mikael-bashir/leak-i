@@ -46,7 +46,7 @@ RUN uv venv --python 3.11 ${HOME}/app/.venv
 ENV PATH="${HOME}/app/.venv/bin:${PATH}"
 
 # Install FastMCP
-RUN uv pip install fastmcp asyncio nest_asyncio
+RUN uv pip install fastmcp asyncio nest_asyncio chromadb sentence-transformers
 
 # 9. Environment Variables & Boot
 EXPOSE 7860

@@ -20,7 +20,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 6. Clone Loogle
 WORKDIR ${HOME}
-RUN git clone https://github.com/leanprover-community/loogle.git
+RUN git clone https://github.com/nomeata/loogle.git
 WORKDIR ${HOME}/loogle
 RUN git checkout ceaefdb
 

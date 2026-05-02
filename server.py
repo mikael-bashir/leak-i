@@ -31,11 +31,12 @@ async def loogle_search(query: str) -> str:
         def run_loogle():
             # Executing: lake exe loogle --json "query"
             return subprocess.run(
-                ["lake", "exe", "loogle", "--json", query],
+                [".lake/build/bin/loogle", "--json", query],
                 cwd=LOOGLE_DIR,
                 capture_output=True,
                 text=True,
-                timeout=60 # Mathlib index is huge, give it time
+                stdin=subprocess.DEVNULL,
+                timeout=300 # Mathlib index is huge, give it time
             )
             
         process = await asyncio.to_thread(run_loogle)

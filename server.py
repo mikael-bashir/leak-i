@@ -191,10 +191,23 @@ async def loogle_search(query: str) -> str:
 @mcp.tool()
 async def moogle_search(concept: str) -> str:
     """
-    Semantic concept search for Lean 4 Mathlib.
-    Use this tool when you know the mathematical concept in English (e.g., 'Euler's theorem', 'multiplying by zero', 'topological space') 
-    but don't know the exact Lean theorem name or type signature. It is recommended to use this alongside Loogle for deeper usage understanding of
-    theorems of interest.
+    Semantic concept search for Lean 4 Mathlib using Natural Language.
+    
+    Use this tool when you know the mathematical concept in English but don't know 
+    the exact Lean theorem name or type signature.
+    
+    GUIDELINES:
+    1. Describe concepts in plain English (e.g., 'mean value theorem', 'multiplying by zero').
+    2. Do NOT use Lean wildcards (_), metavariables (?a), or code snippets. 
+    3. Use this tool to DISCOVER naming conventions (e.g., finding that 'square' is 
+       often called 'sq' or 'mul_self' in Mathlib).
+    4. Once you find a theorem name or naming pattern, PIVOT to loogle_search for 
+       the exact type signature or to find variations.
+    
+    Examples:
+    - "Difference of squares"
+    - "Intermediate Value Theorem"
+    - "Triangle inequality for complex numbers"
     """
     logger.info(f"Moogle Query: '{concept}'")
     try:

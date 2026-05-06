@@ -147,8 +147,13 @@ async def loogle_search(query: str) -> str:
     CRITICAL LEAN SYNTAX RULES:
     1. Do NOT use natural language.
     2. Use standard quotes for substrings (e.g., "sq", "pi"). Do NOT manually escape them with backslashes.
-    3. NEVER use the `_` wildcard for the right side of a conclusion (e.g., `|- _ = _ * _`). This causes combinatorial explosions and server timeouts.
-    4. ALWAYS anchor your searches with specific Lean constants (e.g., `Nat`, `Real.sin`, `0`) or specific metavariables (e.g., `?a`, `?b`) to keep searches computationally feasible and fast.
+    3. ALWAYS anchor your searches with specific Lean constants (e.g., `Nat`, `Real.sin`, `0`) or specific metavariables (e.g., `?a`, `?b`) to keep searches computationally feasible and fast.
+    AVOID queries like (_ + _ = _ + _).
+    4. Use subexpressions when you need a wider net, e.g. _ * (_ ^ _) finds all lemmas whose statement
+    includes a product, with one number raised to a power.
+    5. Pattern searches with paramaters are order invariant.
+    6. You can search by lemma/theorem conclusion (e.g. |- tsum _ = _ * tsum _), lemma name substring (e.g. "differ"), or by Lean4 constants (e.g. "Real.sin")
+    7. You can use comma to enforce multiple filters.
     
     Examples of good queries:
     - Real.sqrt ?a * Real.sqrt ?a

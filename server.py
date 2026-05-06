@@ -269,7 +269,14 @@ async def main_serve():
     # 3. Start Uvicorn programmatically so it shares the CURRENT event loop
     # This prevents the "Task attached to a different loop" crashes.
     logger.info("Booting up Dual Loogle/Moogle environment...")
-    config = uvicorn.Config(http_app, host="0.0.0.0", port=7860)
+    config = uvicorn.Config(
+        http_app, 
+        host="0.0.0.0", 
+        port=7860,
+        proxy_headers=True,               # Trust X-Forwarded-* headers
+        forwarded_allow_ips="*",
+        log_level="info"
+    )
     server = uvicorn.Server(config)
     await server.serve()
 

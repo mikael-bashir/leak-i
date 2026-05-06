@@ -1,4 +1,3 @@
-import subprocess
 import json
 import os
 import asyncio
@@ -9,9 +8,6 @@ import nest_asyncio
 import chromadb
 from sentence_transformers import SentenceTransformer
 import logging
-from mcp.server.sse import SseServerTransport
-from starlette.routing import Route
-from starlette.applications import Starlette
 
 nest_asyncio.apply()
 

@@ -3,6 +3,7 @@ import os
 import asyncio
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.cors import CORSMiddleware
 import nest_asyncio
 import chromadb
@@ -26,7 +27,12 @@ moogle_collection = chroma_client.get_collection(name="moogle")
 logger.info("Moogle Brain Online.")
 
 # Create your FastMCP server
-mcp = FastMCP("Leak-I")
+mcp = FastMCP(
+    "Leak-I",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
+)
 
 
 # ==========================================

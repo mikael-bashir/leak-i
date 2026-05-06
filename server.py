@@ -9,6 +9,9 @@ import nest_asyncio
 import chromadb
 from sentence_transformers import SentenceTransformer
 import logging
+from mcp.server.sse import SseServerTransport
+from starlette.routing import Route
+from starlette.applications import Starlette
 
 nest_asyncio.apply()
 
@@ -256,7 +259,7 @@ async def main_serve():
     logger.info("✅ Mathlib fully loaded into RAM! Fast MCP searches are now available.")
 
     # 1. Grab the standard Starlette ASGI application
-    http_app = mcp.streamable_http_app()
+    http_app = mcp.sse_app()
     
     # 2. Add the CORS middleware directly to the app
     http_app.add_middleware(

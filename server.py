@@ -168,6 +168,11 @@ class LoogleDaemon:
             pass
 
     async def search(self, query: str, timeout: float = QUERY_TIMEOUT) -> dict:
+        # Guard trivially-bad input BEFORE it reaches loogle: an empty line makes
+        # loogle treat stdin as closed and exit, which would otherwise force a
+        # ~2-min cold reboot on the next query.
+        if not query or not query.strip():
+            return {"error": "Empty query. Give a Lean pattern (e.g. `_ ^ 2`), a name substring in quotes (e.g. \"add_comm\"), or a constant (e.g. `Real.sin`)."}
         async with self.lock:
             try:
                 await self._ensure_ready()

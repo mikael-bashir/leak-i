@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import asyncio
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -61,6 +62,11 @@ class LoogleDaemon:
         self.process: asyncio.subprocess.Process | None = None
         self.lock = asyncio.Lock()
         self.is_ready = False
+        # loogle emits exactly one result object per query line. When a query is
+        # abandoned (times out) we DON'T kill the still-warm daemon — instead we
+        # count the abandoned query here so its late-arriving result is discarded
+        # (not mis-returned) before the next query's real result is read.
+        self._pending_abandoned = 0
 
     async def boot(self):
         """Spawn loogle. Does NOT wait for the index — _ensure_ready() does."""
@@ -132,6 +138,16 @@ class LoogleDaemon:
                     pending = ""
                 continue
             if isinstance(obj, dict) and ("hits" in obj or "error" in obj):
+                # A real result object. If earlier queries were abandoned on
+                # timeout, their results surface here first — discard exactly that
+                # many so THIS query gets its own answer, not a stale one.
+                if self._pending_abandoned > 0:
+                    self._pending_abandoned -= 1
+                    logger.info(
+                        f"[LOOGLE] discarded late result from an abandoned query "
+                        f"({self._pending_abandoned} still pending)"
+                    )
+                    continue
                 return obj
             # Heartbeat / header / other JSON — keep waiting for the real result.
             logger.info(f"[LOOGLE skip] {str(obj)[:80]}")
@@ -159,13 +175,33 @@ class LoogleDaemon:
                 logger.error(f"⚠️ [LOOGLE] warmup failed: {e}")
 
     def _reset(self):
-        """Kill the (wedged/dead) process so the next call reboots cleanly."""
+        """Kill the (wedged/dead) process so the next call reboots cleanly. Only
+        for genuinely-dead states (EOF, failed boot, wedged past the safety
+        valve) — NEVER for an ordinary slow query, which just drops the warm
+        index and forces a multi-minute reload that poisons every later query."""
         self.is_ready = False
+        # A fresh process has no in-flight results, so clear the abandoned count.
+        self._pending_abandoned = 0
         try:
             if self.process:
                 self.process.kill()
         except Exception:
             pass
+
+    @staticmethod
+    def _reject_reason(query: str) -> str | None:
+        """Reject queries that are pathological for loogle BEFORE they reach it —
+        one bad query used to stall the daemon for everyone. A bare integer
+        (e.g. "1680") makes loogle elaborate it as a term and burn its whole
+        heartbeat budget; that exact query caused the outage we're fixing."""
+        q = query.strip()
+        if re.fullmatch(r"[+-]?\d+", q):
+            return (
+                "Bare numbers aren't searchable — loogle needs a TYPE PATTERN, a "
+                'name substring in quotes, or a constant. Try e.g. `Nat.factorial`, '
+                '`"add_comm"`, or a pattern like `_ ^ 2 + _`.'
+            )
+        return None
 
     async def search(self, query: str, timeout: float = QUERY_TIMEOUT) -> dict:
         # Guard trivially-bad input BEFORE it reaches loogle: an empty line makes
@@ -173,6 +209,10 @@ class LoogleDaemon:
         # ~2-min cold reboot on the next query.
         if not query or not query.strip():
             return {"error": "Empty query. Give a Lean pattern (e.g. `_ ^ 2`), a name substring in quotes (e.g. \"add_comm\"), or a constant (e.g. `Real.sin`)."}
+        reject = self._reject_reason(query)
+        if reject:
+            logger.info(f"[LOOGLE] rejected pathological query {query!r} without hitting loogle")
+            return {"error": reject}
         async with self.lock:
             try:
                 await self._ensure_ready()
@@ -181,16 +221,31 @@ class LoogleDaemon:
                 self._reset()
                 return {"error": f"loogle backend failed to start: {e}"}
 
-            await self._drain()
+            # Only drain stale output when nothing is outstanding. If earlier
+            # queries were abandoned, their results are accounted for by
+            # _pending_abandoned and skipped inside _read_result — draining here
+            # would silently eat them and desync the skip count.
+            if self._pending_abandoned == 0:
+                await self._drain()
             try:
                 self.process.stdin.write((query + "\n").encode("utf-8"))
                 await self.process.stdin.drain()
                 return await self._read_result(timeout)
             except asyncio.TimeoutError:
-                # This ONE query wedged the REPL; reset so it doesn't desync the
-                # next query. (Rare now that reads are robust.)
-                logger.error(f"[LOOGLE] query timed out ({timeout:.0f}s): {query!r} — resetting")
-                self._reset()
+                # The REPL is SLOW, not dead. Do NOT kill it — killing drops the
+                # warm Mathlib index and forces a ~3-5 min cold reload that
+                # poisons EVERY following query (the exact outage this fixes).
+                # Leave the daemon warm and mark the query abandoned so its late
+                # result is discarded before the next one. Only if several pile
+                # up (truly wedged) do we accept a one-time reboot.
+                self._pending_abandoned += 1
+                logger.error(
+                    f"[LOOGLE] query slow (> {timeout:.0f}s): {query!r} — abandoned, "
+                    f"index kept warm ({self._pending_abandoned} pending)"
+                )
+                if self._pending_abandoned >= 3:
+                    logger.error("[LOOGLE] too many stuck queries — daemon looks wedged, rebooting once")
+                    self._reset()
                 return {"error": "Query timed out (too broad/complex). Anchor it with a specific constant (e.g. `Nat`, `Real.sin`) or make it narrower."}
             except EOFError:
                 logger.error("[LOOGLE] daemon EOF — will reboot next call")

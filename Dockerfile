@@ -45,8 +45,15 @@ RUN uv python install 3.11
 RUN uv venv --python 3.11 ${HOME}/app/.venv
 ENV PATH="${HOME}/app/.venv/bin:${PATH}"
 
-# Install FastMCP
-RUN uv pip install fastmcp asyncio nest_asyncio chromadb sentence-transformers
+# CPU-only torch first: sentence-transformers pulls torch transitively, and
+# without this it resolves PyPI's default CUDA build (2GB+ of nvidia-*
+# wheels) on this CPU-only hardware, which OOMs the container at boot.
+RUN uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install FastMCP. "mcp<2" pinned: mcp 2.x renamed FastMCP to MCPServer and
+# changed its API, breaking server.py's `from mcp.server.fastmcp import
+# FastMCP` import.
+RUN uv pip install fastmcp "mcp<2" asyncio nest_asyncio chromadb sentence-transformers
 
 # 9. Environment Variables & Boot
 EXPOSE 7860

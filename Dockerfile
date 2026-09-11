@@ -25,13 +25,14 @@ WORKDIR ${HOME}/loogle
 RUN git checkout ceaefdb
 
 # 7. VERSION LOCKING (The Magic Trick)
-# We overwrite Loogle's default toolchain with your exact Pantograph toolchain.
-RUN echo 'leanprover/lean4:v4.29.1' > lean-toolchain
+# We overwrite Loogle's default toolchain with the toolchain the rest of the
+# Leak fleet is pinned to.
+RUN echo 'leanprover/lean4:v4.33.1' > lean-toolchain
 
-# Update lake to pull the Mathlib version associated with v4.29.1
+# Update lake to pull the Mathlib version associated with v4.33.1
 RUN lake update
 
-# CRITICAL: Fetch pre-compiled Mathlib binaries for v4.29.1 so HF doesn't timeout
+# CRITICAL: Fetch pre-compiled Mathlib binaries for v4.33.1 so HF doesn't timeout
 RUN lake exe cache get
 
 # Compile the Loogle executable against the locked environment

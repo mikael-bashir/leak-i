@@ -426,11 +426,12 @@ async def main_serve():
     )
 
     # 3. Start Uvicorn programmatically so it shares the CURRENT event loop
-    logger.info("🌐 Serving Dual Loogle/Moogle MCP (SSE) on 0.0.0.0:7860")
+    port = int(os.environ.get("PORT", "7860"))
+    logger.info(f"🌐 Serving Dual Loogle/Moogle MCP (SSE) on 0.0.0.0:{port}")
     config = uvicorn.Config(
         http_app,
         host="0.0.0.0",
-        port=7860,
+        port=port,
         proxy_headers=True,
         forwarded_allow_ips="*",
         log_level="info"

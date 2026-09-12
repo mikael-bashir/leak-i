@@ -30,12 +30,23 @@ RUN git checkout ceaefdb
 RUN echo 'leanprover/lean4:v4.34.0-rc2' > lean-toolchain
 
 # Update lake to pull the Mathlib version associated with v4.34.0-rc2
+# The environment loogle indexes is the Tengoku tree — one self-contained
+# library seeded from Mathlib — pulled in as loogle's single dependency in
+# place of Mathlib. loogle's own sources import Mathlib modules by their old
+# names; those map 1:1 onto the tree (Mathlib.X -> Tengoku.X, Batteries.X ->
+# Tengoku.Std.X).
+RUN sed -i 's|^require mathlib from git .*$|require tengoku from git "https://github.com/competemath/tengoku" @ "main"|' lakefile.lean && \
+    grep -rl "import Mathlib\|import Batteries" Loogle Loogle.lean Tests.lean 2>/dev/null | xargs -r sed -i -E 's/^(import[[:space:]]+)Mathlib\b/\1Tengoku/; s/^(import[[:space:]]+)Batteries\b/\1Tengoku.Std/'
 RUN lake update
 
-# CRITICAL: Fetch pre-compiled Mathlib binaries for v4.34.0-rc2 so HF doesn't timeout
-RUN lake exe cache get
+# The tree's published build cache replaces `lake exe cache get`. gh needs a
+# token to read release assets at build time: pass GH_TOKEN as a build secret.
+USER root
+RUN apt-get update && apt-get install -y zstd gh && rm -rf /var/lib/apt/lists/*
+USER user
+RUN --mount=type=secret,id=GH_TOKEN,env=GH_TOKEN cd .lake/packages/tengoku && scripts/cache.sh get
 
-# Compile the Loogle executable against the locked environment
+# Compile loogle against the tree
 RUN lake build
 
 # 8. Setup Python App Environment

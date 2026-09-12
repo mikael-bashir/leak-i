@@ -75,7 +75,9 @@ class LoogleDaemon:
         logger.info("🚨 [LOOGLE] starting `loogle -i --json` (index load ~3-5 min)…")
         self.is_ready = False
         self.process = await asyncio.create_subprocess_exec(
-            "./.lake/build/bin/loogle", "-i", "--json",
+            # Index the whole Tengoku tree: the seeded root plus every library
+            # of verified additions (Tengoku/All.lean is the tools' entry point).
+            "./.lake/build/bin/loogle", "-i", "--json", "--module", os.environ.get("TENGOKU_MODULE", "Tengoku.All"),
             cwd=LOOGLE_DIR,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -259,6 +261,50 @@ class LoogleDaemon:
 
 # Instantiate the daemon globally
 loogle_engine = LoogleDaemon()
+
+async def _run(cmd: list[str], cwd: str, timeout: float) -> tuple[int, str]:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return -1, f"timed out after {timeout:.0f}s: {' '.join(cmd)}"
+    return proc.returncode, out.decode("utf-8", errors="replace")
+
+
+@mcp.tool()
+async def tengoku_sync() -> str:
+    """
+    Re-index against whatever the Tengoku tree currently is: update loogle's
+    tree dependency to the tree's HEAD, fetch the tree's newest published
+    build cache, rebuild loogle, and restart it so its index covers every
+    verified addition. Takes minutes (the index is rebuilt from the
+    environment). Moogle's semantic index is a separate embedding job and is
+    NOT refreshed here.
+    """
+    dep = os.path.join(LOOGLE_DIR, ".lake", "packages", "tengoku")
+    steps = []
+    before = (await _run(["git", "rev-parse", "--short", "HEAD"], dep, 30))[1].strip()
+    rc, out = await _run(["lake", "update", "tengoku"], LOOGLE_DIR, 600)
+    steps.append(f"lake update tengoku: rc={rc} {out.strip().splitlines()[-1] if out.strip() else ''}")
+    if rc != 0:
+        return "❌ tengoku_sync: could not update the tree dependency\n" + "\n".join(steps) + "\n" + out[-1500:]
+    rc, out = await _run(["scripts/cache.sh", "get"], dep, 1800)
+    steps.append(f"cache get: rc={rc} {out.strip().splitlines()[-1] if out.strip() else ''}")
+    rc, out = await _run(["lake", "build"], LOOGLE_DIR, 3600)
+    steps.append(f"lake build: rc={rc} {out.strip().splitlines()[-1] if out.strip() else ''}")
+    if rc != 0:
+        return "❌ tengoku_sync: loogle does not build against the tree here\n" + "\n".join(steps) + "\n" + out[-2000:]
+    after = (await _run(["git", "rev-parse", "--short", "HEAD"], dep, 30))[1].strip()
+    if loogle_engine.process and loogle_engine.process.returncode is None:
+        loogle_engine.process.kill()
+        await loogle_engine.process.wait()
+    loogle_engine.process = None
+    loogle_engine.is_ready = False
+    await loogle_engine.boot()
+    return f"✅ tengoku_sync: tree {before} → {after}; loogle restarted and re-indexing (ready in a few minutes). Moogle not refreshed (separate embedding job).\n" + "\n".join(steps)
+
 
 @mcp.tool()
 async def loogle_search(query: str) -> str:

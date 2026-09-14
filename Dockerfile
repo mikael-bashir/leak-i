@@ -19,7 +19,8 @@ WORKDIR ${HOME}
 # rebuild instead of reusing a stale cached clone layer.
 ARG TENGOKU_REFRESH=0
 RUN echo "refresh ${TENGOKU_REFRESH}" >/dev/null && git clone --filter=blob:none https://github.com/competemath/tengoku.git tengoku
-RUN --mount=type=secret,id=GH_TOKEN,env=GH_TOKEN,required=false cd tengoku && scripts/pin.sh
+RUN --mount=type=secret,id=GH_TOKEN,env=GH_TOKEN,required=false cd tengoku && scripts/pin.sh \
+ && rm -rf .lake/build/ir
 ENV TENGOKU_DIR=${HOME}/tengoku
 
 # loogle, built against the tree instead of Mathlib. loogle-tengoku.patch swaps

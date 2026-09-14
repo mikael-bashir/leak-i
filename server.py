@@ -283,6 +283,9 @@ async def _run(cmd: list[str], cwd: str, timeout: float) -> tuple[int, str]:
 # published cache; loogle is then rebuilt against it and restarted so its
 # index covers every verified addition.
 _refresh = {"running": False, "last_post": 0.0, "last": ""}
+# TENGOKU_AUTO_REFRESH=0 turns every door off: for an instance that runs on a
+# developer's working tree (which must never be checked out or overwritten).
+AUTO_REFRESH = os.environ.get("TENGOKU_AUTO_REFRESH", "1") != "0"
 
 
 async def _tree_check() -> tuple[str, str]:
@@ -335,6 +338,8 @@ async def tengoku_sync() -> str:
     index is rebuilt from the environment). Moogle's semantic index is a
     separate embedding job and is NOT refreshed here.
     """
+    if not AUTO_REFRESH:
+        return "⛔ tengoku_sync is disabled on this instance (TENGOKU_AUTO_REFRESH=0: it runs on a working tree)."
     return await _tengoku_sync()
 
 
@@ -348,6 +353,8 @@ async def _refresh_endpoint(request):
     if request.method == "GET":
         status, sha = await _tree_check()
         return JSONResponse({"status": status, "pinned": head, "newest": sha, "refreshing": _refresh["running"], "last": _refresh["last"]})
+    if not AUTO_REFRESH:
+        return JSONResponse({"status": "disabled", "pinned": head}, status_code=403)
     if _refresh["running"]:
         return JSONResponse({"status": "busy", "pinned": head}, status_code=409)
     now = time.time()
@@ -364,6 +371,10 @@ async def _refresh_endpoint(request):
 async def _startup():
     """At start: if a newer cache was published since this image was built (a
     nightly went by while the Space slept), move onto it before indexing."""
+    if not AUTO_REFRESH:
+        logger.info("🌳 Tree auto-refresh is off (TENGOKU_AUTO_REFRESH=0)")
+        await loogle_engine.warmup()
+        return
     status, sha = await _tree_check()
     if status == "newer":
         logger.info(f"🌱 A newer Tengoku cache is published ({sha[:12]}) — refreshing before indexing…")

@@ -3,6 +3,7 @@ import os
 import re
 import asyncio
 import uvicorn
+import time
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.cors import CORSMiddleware
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 # Point exactly to where Docker built it
 HOME = os.environ.get("HOME", "/home/user")
 LOOGLE_DIR = os.path.join(HOME, "loogle")
+# The tree loogle is built against and indexes (a path dependency of loogle).
+TENGOKU_DIR = os.environ.get("TENGOKU_DIR", os.path.join(HOME, "tengoku"))
 
 # --- INITIALIZE MOOGLE BRAIN ---
 logger.info("Loading Embedding Model and ChromaDB for Moogle...")
@@ -160,7 +163,7 @@ class LoogleDaemon:
         if self.is_ready and self.process and self.process.returncode is None:
             return
         await self.boot()
-        logger.info("⏳ [LOOGLE] loading Mathlib index (blocking a warm query)…")
+        logger.info("⏳ [LOOGLE] loading the Tengoku index (blocking a warm query)…")
         await self._drain()
         self.process.stdin.write(b"Nat.add_comm\n")
         await self.process.stdin.drain()
@@ -273,43 +276,110 @@ async def _run(cmd: list[str], cwd: str, timeout: float) -> tuple[int, str]:
     return proc.returncode, out.decode("utf-8", errors="replace")
 
 
+# --- Tree refresh -------------------------------------------------------------
+# One implementation behind three doors: the `tengoku_sync` MCP tool, the
+# POST /refresh endpoint the nightly cache workflow calls, and the check at
+# start-up. `scripts/pin.sh` (in the tree) pins the tree to its newest
+# published cache; loogle is then rebuilt against it and restarted so its
+# index covers every verified addition.
+_refresh = {"running": False, "last_post": 0.0, "last": ""}
+
+
+async def _tree_check() -> tuple[str, str]:
+    """('current' | 'newer' | 'unknown', sha-or-detail) — changes nothing."""
+    rc, out = await _run(["scripts/pin.sh", "--check"], TENGOKU_DIR, 300)
+    last = out.strip().splitlines()[-1] if out.strip() else ""
+    parts = last.split()
+    if rc in (0, 3) and len(parts) == 2 and parts[0] in ("current", "newer"):
+        return parts[0], parts[1]
+    return "unknown", last[:200]
+
+
+async def _tengoku_sync() -> str:
+    if _refresh["running"]:
+        return "⏳ tengoku_sync: a refresh is already running"
+    _refresh["running"] = True
+    try:
+        async with loogle_engine.lock:
+            before = (await _run(["git", "rev-parse", "--short", "HEAD"], TENGOKU_DIR, 30))[1].strip()
+            rc, out = await _run(["scripts/pin.sh"], TENGOKU_DIR, 3600)
+            tail = out.strip().splitlines()[-1] if out.strip() else ""
+            if rc != 0:
+                _refresh["last"] = f"failed: {tail}"
+                return "❌ tengoku_sync: could not pin the tree to the newest cache\n" + out[-2000:]
+            rc, out = await _run(["lake", "build"], LOOGLE_DIR, 3600)
+            if rc != 0:
+                _refresh["last"] = "failed: loogle does not build against the refreshed tree"
+                return "❌ tengoku_sync: loogle does not build against the refreshed tree\n" + out[-2000:]
+            after = (await _run(["git", "rev-parse", "--short", "HEAD"], TENGOKU_DIR, 30))[1].strip()
+            if loogle_engine.process and loogle_engine.process.returncode is None:
+                loogle_engine.process.kill()
+                await loogle_engine.process.wait()
+            loogle_engine.process = None
+            loogle_engine.is_ready = False
+            await loogle_engine.boot()
+        asyncio.create_task(loogle_engine.warmup())
+        _refresh["last"] = f"{before} → {after}"
+        return (f"✅ tengoku_sync: tree {before} → {after} ({tail}); loogle restarted and re-indexing "
+                "(ready in a few minutes). Moogle's semantic index is a separate embedding job and is not refreshed here.")
+    finally:
+        _refresh["running"] = False
+
+
 @mcp.tool()
 async def tengoku_sync() -> str:
     """
-    Re-index against whatever the Tengoku tree currently is: update loogle's
-    tree dependency to the tree's HEAD, fetch the tree's newest published
-    build cache, rebuild loogle, and restart it so its index covers every
-    verified addition. Takes minutes (the index is rebuilt from the
-    environment). Moogle's semantic index is a separate embedding job and is
-    NOT refreshed here.
+    Re-index against the newest published Tengoku build cache: pin the tree to
+    that cache's commit, unpack it, rebuild loogle against it and restart
+    loogle so its index covers every verified addition. Takes minutes (the
+    index is rebuilt from the environment). Moogle's semantic index is a
+    separate embedding job and is NOT refreshed here.
     """
-    dep = os.path.join(LOOGLE_DIR, ".lake", "packages", "tengoku")
-    steps = []
-    before = (await _run(["git", "rev-parse", "--short", "HEAD"], dep, 30))[1].strip()
-    rc, out = await _run(["lake", "update", "tengoku"], LOOGLE_DIR, 600)
-    steps.append(f"lake update tengoku: rc={rc} {out.strip().splitlines()[-1] if out.strip() else ''}")
-    if rc != 0:
-        return "❌ tengoku_sync: could not update the tree dependency\n" + "\n".join(steps) + "\n" + out[-1500:]
-    rc, out = await _run(["scripts/cache.sh", "get"], dep, 1800)
-    steps.append(f"cache get: rc={rc} {out.strip().splitlines()[-1] if out.strip() else ''}")
-    rc, out = await _run(["lake", "build"], LOOGLE_DIR, 3600)
-    steps.append(f"lake build: rc={rc} {out.strip().splitlines()[-1] if out.strip() else ''}")
-    if rc != 0:
-        return "❌ tengoku_sync: loogle does not build against the tree here\n" + "\n".join(steps) + "\n" + out[-2000:]
-    after = (await _run(["git", "rev-parse", "--short", "HEAD"], dep, 30))[1].strip()
-    if loogle_engine.process and loogle_engine.process.returncode is None:
-        loogle_engine.process.kill()
-        await loogle_engine.process.wait()
-    loogle_engine.process = None
-    loogle_engine.is_ready = False
-    await loogle_engine.boot()
-    return f"✅ tengoku_sync: tree {before} → {after}; loogle restarted and re-indexing (ready in a few minutes). Moogle not refreshed (separate embedding job).\n" + "\n".join(steps)
+    return await _tengoku_sync()
+
+
+async def _refresh_endpoint(request):
+    """GET: is a newer cache published than the one loaded? POST: if so, refresh
+    in the background. Public on purpose: it can only ever move the tree to a
+    cache competemath/tengoku has PUBLISHED, so the most a stranger can do is
+    make this server look at GitHub once every five minutes."""
+    from starlette.responses import JSONResponse
+    head = (await _run(["git", "rev-parse", "HEAD"], TENGOKU_DIR, 30))[1].strip()
+    if request.method == "GET":
+        status, sha = await _tree_check()
+        return JSONResponse({"status": status, "pinned": head, "newest": sha, "refreshing": _refresh["running"], "last": _refresh["last"]})
+    if _refresh["running"]:
+        return JSONResponse({"status": "busy", "pinned": head}, status_code=409)
+    now = time.time()
+    if now - _refresh["last_post"] < 300:
+        return JSONResponse({"status": "cooldown", "pinned": head}, status_code=429)
+    _refresh["last_post"] = now
+    status, sha = await _tree_check()
+    if status != "newer":
+        return JSONResponse({"status": status, "pinned": head, "newest": sha})
+    asyncio.create_task(_tengoku_sync())
+    return JSONResponse({"status": "refreshing", "pinned": head, "newest": sha}, status_code=202)
+
+
+async def _startup():
+    """At start: if a newer cache was published since this image was built (a
+    nightly went by while the Space slept), move onto it before indexing."""
+    status, sha = await _tree_check()
+    if status == "newer":
+        logger.info(f"🌱 A newer Tengoku cache is published ({sha[:12]}) — refreshing before indexing…")
+        result = await _tengoku_sync()
+        logger.info(result.splitlines()[0])
+        if result.startswith("✅"):
+            return  # _tengoku_sync restarted loogle and started the warm-up
+    else:
+        logger.info(f"🌳 Tree check: {status} {sha[:12]}")
+    await loogle_engine.warmup()
 
 
 @mcp.tool()
 async def loogle_search(query: str) -> str:
     """
-    Searches the local Lean 4 Mathlib library for theorems.
+    Searches the Tengoku tree (Mathlib and every other seeded library, plus verified additions) for theorems by name or type pattern.
 
     CRITICAL LEAN SYNTAX RULES:
     1. Do NOT use natural language.
@@ -353,7 +423,7 @@ async def loogle_search(query: str) -> str:
 @mcp.tool()
 async def moogle_search(concept: str) -> str:
     """
-    Semantic concept search for Lean 4 Mathlib using Natural Language.
+    Semantic concept search over Lean 4 declarations using natural language (index built from Mathlib docstrings; the same declaration names exist in Tengoku).
 
     Use this tool when you know the mathematical concept in English but don't know
     the exact Lean theorem name or type signature.
@@ -407,14 +477,15 @@ async def moogle_search(concept: str) -> str:
 async def main_serve():
     logger.info("Booting Leak-I (Loogle + Moogle)…")
 
-    # Warm the loogle Mathlib index in the BACKGROUND so the port opens right
+    # Warm the loogle Tengoku index in the BACKGROUND so the port opens right
     # away (HF marks the Space healthy; moogle is usable immediately). The daemon
     # lock makes the first loogle_search wait behind the warmup instead of racing
     # it — which is what previously kept the index from ever loading.
-    asyncio.create_task(loogle_engine.warmup())
+    asyncio.create_task(_startup())
 
     # 1. Grab the standard Starlette ASGI application
     http_app = mcp.sse_app()
+    http_app.add_route("/refresh", _refresh_endpoint, methods=["GET", "POST"])
 
     # 2. Add the CORS middleware directly to the app
     http_app.add_middleware(

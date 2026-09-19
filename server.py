@@ -61,6 +61,13 @@ INDEX_LOAD_TIMEOUT = 900.0
 # queries failed. Now we DRAIN stale output, send the query, then read until a
 # real loogle result object ({"hits": …} / {"error": …}) arrives, skipping
 # banners and heartbeats and tolerating multi-line JSON.
+# A loogle process reads thousands of library files while it loads. If the tree is being moved at that
+# moment (scripts/pin.sh unpacking a cache or laying a top-up over it) it can load a mix of old and new
+# files. So loads and tree moves take turns; a loogle that is already up is not affected by a move
+# (files are replaced by rename; it keeps what it has mapped).
+_tree_lock = asyncio.Lock()
+
+
 class LoogleDaemon:
     def __init__(self):
         self.process: asyncio.subprocess.Process | None = None
@@ -78,6 +85,7 @@ class LoogleDaemon:
             return
         logger.info("🚨 [LOOGLE] starting `loogle -i --json` (index load ~3-5 min)…")
         self.is_ready = False
+        self.booted_at = time.time()
         self.process = await asyncio.create_subprocess_exec(
             # Index the whole Tengoku tree: the seeded root plus every library
             # of verified additions (Tengoku/All.lean is the tools' entry point).
@@ -163,12 +171,13 @@ class LoogleDaemon:
         is loaded (confirmed by a real result to a trivial warm query)."""
         if self.is_ready and self.process and self.process.returncode is None:
             return
-        await self.boot()
-        logger.info("⏳ [LOOGLE] loading the Tengoku index (blocking a warm query)…")
-        await self._drain()
-        self.process.stdin.write(b"Nat.add_comm\n")
-        await self.process.stdin.drain()
-        await self._read_result(INDEX_LOAD_TIMEOUT)
+        async with _tree_lock:  # the tree must hold still while the index loads
+            await self.boot()
+            logger.info("⏳ [LOOGLE] loading the Tengoku index (blocking a warm query)…")
+            await self._drain()
+            self.process.stdin.write(b"Nat.add_comm\n")
+            await self.process.stdin.drain()
+            await self._read_result(INDEX_LOAD_TIMEOUT)
         self.is_ready = True
         logger.info("✅ [LOOGLE] index resident — searches are fast now.")
 
@@ -358,7 +367,13 @@ async def _tengoku_sync() -> str:
         # No lock here: searches keep flowing to the running loogle while the tree moves under it.
         before = (await _run(["git", "rev-parse", "--short", "HEAD"], TENGOKU_DIR, 30))[1].strip()
         await _ensure_pin()
-        rc, out = await _run([PIN_SH], TENGOKU_DIR, 3600)
+        async with _tree_lock:  # no loogle may be loading while the tree moves
+            rc, out = await _run([PIN_SH], TENGOKU_DIR, 3600)
+            if rc == 0:
+                rc2, out2 = await _run(["lake", "build"], LOOGLE_DIR, 3600)
+            else:
+                rc2, out2 = 0, ""
+        moved_at = time.time()
         tail = out.strip().splitlines()[-1] if out.strip() else ""
         if rc == 4:
             # pin.sh could not replay the newest state and put back the one we were serving.
@@ -368,10 +383,9 @@ async def _tengoku_sync() -> str:
         if rc != 0:
             _refresh["last"] = f"failed: {tail}"
             return "❌ tengoku_sync: could not pin the tree to the newest cache\n" + out[-2000:]
-        rc, out = await _run(["lake", "build"], LOOGLE_DIR, 3600)
-        if rc != 0:
+        if rc2 != 0:
             _refresh["last"] = "failed: loogle does not build against the refreshed tree"
-            return "❌ tengoku_sync: loogle does not build against the refreshed tree\n" + out[-2000:]
+            return "❌ tengoku_sync: loogle does not build against the refreshed tree\n" + out2[-2000:]
         after = (await _run(["git", "rev-parse", "--short", "HEAD"], TENGOKU_DIR, 30))[1].strip()
         old = loogle_engine
         warm = old.is_ready and old.process is not None and old.process.returncode is None
@@ -393,11 +407,13 @@ async def _tengoku_sync() -> str:
             how = "the new index was loaded beside the old one and swapped in — no search waited"
         else:
             async with old.lock:
-                if old.process and old.process.returncode is None:
-                    old.process.kill()
-                    await old.process.wait()
-                old.process, old.is_ready = None, False
-                await old.boot()
+                if old.process and old.process.returncode is None and getattr(old, "booted_at", 0) >= moved_at:
+                    pass  # a search started it after the tree moved: it is already indexing the new state
+                else:
+                    if old.process and old.process.returncode is None:
+                        old.process.kill()
+                        await old.process.wait()
+                    old.process, old.is_ready = None, False
             asyncio.create_task(old.warmup())
             _refresh["cold"] += 1
             how = "loogle restarted and re-indexing (ready in a few minutes)"

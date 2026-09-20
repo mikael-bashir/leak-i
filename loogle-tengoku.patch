@@ -1,0 +1,67 @@
+diff --git a/Loogle/Cache.lean b/Loogle/Cache.lean
+index df3084b..c418a90 100644
+--- a/Loogle/Cache.lean
++++ b/Loogle/Cache.lean
+@@ -3,7 +3,7 @@ Copyright (c) 2023 Joachim Breitner. All rights reserved.
+ Released under Apache 2.0 license as described in the file LICENSE.
+ Authors: Joachim Breitner
+ -/
+-import Batteries.Util.Cache
++import Tengoku.Std.Util.Cache
+ 
+ open Lean Meta
+ 
+diff --git a/Loogle/Find.lean b/Loogle/Find.lean
+index dfff0fa..d831bc1 100644
+--- a/Loogle/Find.lean
++++ b/Loogle/Find.lean
+@@ -4,8 +4,8 @@ Released under Apache 2.0 license as described in the file LICENSE.
+ Authors: Joachim Breitner
+ -/
+ import Lean
+-import Batteries.Data.String.Matcher
+-import Batteries.Util.Pickle
++import Tengoku.Std.Data.String.Matcher
++import Tengoku.Std.Util.Pickle
+ 
+ import Loogle.Cache
+ import Loogle.NameRel
+diff --git a/Loogle/Trie.lean b/Loogle/Trie.lean
+index 980bf2b..41218c9 100644
+--- a/Loogle/Trie.lean
++++ b/Loogle/Trie.lean
+@@ -9,7 +9,7 @@ Adapted from Lean.Data.Trie to use path compression.
+ 
+ -/
+ import Lean.Data.Format
+-import Batteries.Data.Array
++import Tengoku.Std.Data.Array
+ 
+ namespace Loogle
+ 
+diff --git a/LoogleMathlibCache.lean b/LoogleMathlibCache.lean
+index be7eb44..f5b5012 100644
+--- a/LoogleMathlibCache.lean
++++ b/LoogleMathlibCache.lean
+@@ -3,7 +3,7 @@ Copyright (c) 2023 Joachim Breitner. All rights reserved.
+ Released under Apache 2.0 license as described in the file LICENSE.
+ Authors: Joachim Breitner
+ -/
+-import Mathlib
++import Tengoku
+ import Loogle.Find
+ 
+ /-!
+diff --git a/lakefile.lean b/lakefile.lean
+index f9747f1..91bae8e 100644
+--- a/lakefile.lean
++++ b/lakefile.lean
+@@ -10,7 +10,7 @@ package «loogle» {
+ }
+ 
+ -- require std from git "https://github.com/leanprover/std4" @ "main"
+-require mathlib from git "https://github.com/leanprover-community/mathlib4" @ "master"
++require tengoku from "../tengoku"
+ 
+ meta if run_io Option.isSome <$> IO.getEnv "LOOGLE_SECCOMP" then do
+   target loogle_seccomp.o pkg : System.FilePath := do
